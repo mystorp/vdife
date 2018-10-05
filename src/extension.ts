@@ -1,0 +1,306 @@
+'use strict';
+// The module 'vscode' contains the VS Code extensibility API
+// Import the module and reference it with the alias vscode in your code below
+import * as vscode from 'vscode';
+import * as fs from "fs";
+import {normalize, sep} from "path";
+import {getBranch, isBranchMatch} from "./utils";
+
+
+
+namespace LocalizeResourceProvider {
+    export interface LanguagePack {
+        [key: string]: any;
+    }
+    
+    export interface LocalizeResource {
+        document: vscode.TextDocument;
+        data: LanguagePack;
+        dispose: Function;
+    }
+    
+    const resourceCache: {
+        [key: string]: {
+            documents: Array<vscode.TextDocument>;
+            data: LanguagePack
+        }
+    } = {};
+    function removeCacheFor(doc: vscode.TextDocument) {
+        let resourceFile;
+        Object.keys(resourceCache).forEach(key => {
+            let docs = resourceCache[key].documents;
+            let docIndex = docs.indexOf(doc);
+            if(docIndex > -1) {
+                docs.splice(docIndex, 1);
+            }
+            resourceFile = key;
+        });
+        if(!resourceFile) { return; }
+        if(resourceCache[resourceFile].documents.length === 0) {
+            delete resourceCache[resourceFile];
+        }
+    }
+    function register(doc: vscode.TextDocument, resourceFile: string, resourceData: LanguagePack) {
+        if(!resourceCache.hasOwnProperty(resourceFile)) {
+            resourceCache[resourceFile] = {
+                data: resourceData,
+                documents: []
+            };
+        }
+        resourceCache[resourceFile].documents.push(doc);
+    }
+    export function prepare(doc: vscode.TextDocument): Promise<LocalizeResource> {
+        if(doc.languageId !== "html") {
+            throw new Error("only support html file!");
+        }
+        let config = vscode.workspace.getConfiguration("vdife");
+        let ngconsoleRoot = normalize(config.ngconsole + sep);
+        let ngconsoleResourcesRoot = normalize(config.ngconsole_resources + sep);
+        if(!doc.fileName.startsWith(ngconsoleRoot)) {
+            throw new Error("not ngconsole document");
+        }
+        return Promise.all([
+            getBranch(ngconsoleRoot),
+            getBranch(ngconsoleResourcesRoot)
+        ]).then(function(arr){
+            if(!isBranchMatch(...arr)) {
+                throw new Error("ngconsole, ngconsole_resources 仓库分支不匹配！");
+            }
+            let parts = arr[0].split("-");
+            let name = parts.length === 3 ? parts[2] : "e-vdi";
+            let resourceFile = `${config.ngconsole_resources}/resources/pkg/${name}/lang.json`;
+            return new Promise<LocalizeResource>(function(resolve, reject){
+                fs.readFile(resourceFile, "utf-8", function(err, text){
+                    if(err) {
+                        return reject(err);
+                    }
+                    let lp = JSON.parse(text) as LanguagePack;
+                    register(doc, resourceFile, lp);
+                    resolve({
+                        document: doc,
+                        data: lp,
+                        dispose: removeCacheFor.bind(null, doc)
+                    });
+                });
+            });
+        });
+    }
+    export function getLanguagePack(doc: vscode.TextDocument): LanguagePack | undefined {
+        let hit;
+        Object.keys(resourceCache).forEach(key => {
+            let documents = resourceCache[key].documents;
+            if(documents.indexOf(doc) > -1) {
+                hit = resourceCache[key].data;
+            }
+        });
+        return hit;
+    }
+    export function saveLanguagePack(lang: LanguagePack) {
+        Object.keys(resourceCache).forEach(file => {
+            if(resourceCache[file].data === lang) {
+                fs.writeFile(file, JSON.stringify(lang, null, 4), function(err){
+                    err && vscode.window.showErrorMessage(`保存 ${file} 时报错：${err.message}`);
+                });
+            }
+        });
+    }
+    export function dispose(){
+        Object.keys(resourceCache).forEach(file => delete resourceCache[file]);
+    }
+}
+
+namespace decorations {
+    const existsDecoration = vscode.window.createTextEditorDecorationType({
+        overviewRulerColor: '#3eb94e',
+        overviewRulerLane: vscode.OverviewRulerLane.Right,
+        light: {
+            color: "white",
+            backgroundColor: '#3eb94e'
+        },
+        dark: {
+            color: "white",
+            backgroundColor: '#3eb94e'
+        }
+    });
+    const missingDecoration = vscode.window.createTextEditorDecorationType({
+        overviewRulerColor: '#f2554e',
+        overviewRulerLane: vscode.OverviewRulerLane.Right,
+        light: {
+            color: "white",
+            backgroundColor: '#f2554e'
+        },
+        dark: {
+            color: "white",
+            backgroundColor: '#f2554e'
+        }
+    });
+    export const regexp = /(?:data-)?localize=["'](.*?)["']/mg;
+    const interpolateRegExp = /\{\{.*?\}\}/
+
+    export function refresh(editor: vscode.TextEditor) {
+        let doc = editor.document;
+        let resourceData = LocalizeResourceProvider.getLanguagePack(doc);
+        if(!resourceData) { return; }
+        let range = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
+        let renderExistsList: vscode.DecorationOptions[] = [];
+        let renderMissingList: vscode.DecorationOptions[] = [];
+    
+        let text = editor.document.getText(range);
+        let result;
+        let startPos: vscode.Position, endPos: vscode.Position;
+        let decoration;
+        regexp.lastIndex = 0;
+        while((result = regexp.exec(text))) {
+            // 忽略带有插值语法的 localize 指令
+            if(interpolateRegExp.test(result[1])) {
+                continue;
+            }
+            startPos = doc.positionAt(result.index);
+            endPos = doc.positionAt(result.index + result[0].length);
+            decoration = {
+                range: new vscode.Range(startPos, endPos)
+            };
+            if(resourceData.hasOwnProperty(result[1])) {
+                renderExistsList.push(decoration);
+            } else {
+                renderMissingList.push(decoration);
+            }
+        }
+    
+        editor.setDecorations(existsDecoration, renderExistsList);
+        editor.setDecorations(missingDecoration, renderMissingList);
+    }
+}
+
+
+export function activate(context: vscode.ExtensionContext) {
+    let config = vscode.workspace.getConfiguration("vdife");
+    if(!checkConfigrations(config)) { return; }
+    let cache: LocalizeResourceProvider.LocalizeResource[] = [];
+    // 手动执行 "同步 localize" 命令时
+    context.subscriptions.push(vscode.commands.registerTextEditorCommand("vdife.syncLocalize", (textEditor, edit) => {
+        if(textEditor.document.languageId !== "html") {
+            return;
+        }
+        let doc = textEditor.document;
+        let resourceData: LocalizeResourceProvider.LanguagePack|undefined;
+        cache.forEach(function(resource){
+            if(resource.document === doc) {
+                resourceData = resource.data;
+            }
+        });
+        if(!resourceData) { return; }
+        let text = doc.getText();
+        let hasNewLocalize = false;
+        let allRange = new vscode.Range(doc.positionAt(0), doc.positionAt(text.length));
+        let newText = doc.getText().replace(decorations.regexp, function(m, key){
+            if(!resourceData.hasOwnProperty(key)) {
+                hasNewLocalize = true;
+                resourceData[key] = key;
+            }
+            return m.indexOf("data-") === 0 ? m.substring(5) : m;
+        });
+        if(hasNewLocalize) {
+            LocalizeResourceProvider.saveLanguagePack(resourceData);
+        }
+        textEditor.edit(function(edit){
+            edit.replace(allRange, newText);
+        });
+    }));
+    // 新增 localize
+    context.subscriptions.push(vscode.commands.registerTextEditorCommand("vdife.newLocalize", (textEditor) => {
+        let inputValueRegexp = /^\s*(.+?)\s*=\s*(.+?)\s*$/
+        let selectedText = textEditor.document.getText(textEditor.selection);
+        let placeHolder = "输入格式：key=value";
+        vscode.window.showInputBox({
+            value: selectedText,
+            ignoreFocusOut: false,
+            prompt: placeHolder,
+            placeHolder: placeHolder,
+            valueSelection: [0, selectedText.length],
+            validateInput: function(value){
+                return inputValueRegexp.test(value) ? "" : placeHolder;
+            }
+        }).then(function(text){
+            if(!text) { return; }
+            let result = inputValueRegexp.exec(text);
+            let lang = LocalizeResourceProvider.getLanguagePack(textEditor.document);
+            if(result && lang) {
+                lang[result[1]] = result[2];
+                LocalizeResourceProvider.saveLanguagePack(lang);
+            }
+        });
+    }));
+    // 打开 html 时缓存必要的资源信息
+    const onOpen = function(doc: vscode.TextDocument){
+        if(doc.languageId !== "html") { return; }
+        try {
+            LocalizeResourceProvider.prepare(doc).then(function(resource){
+                cache.push(resource);
+                vscode.window.visibleTextEditors.forEach(editor => {
+                    if(editor.document === doc) {
+                        decorations.refresh(editor);
+                    }
+                });
+            }, function(e){
+                vscode.window.showErrorMessage(e.message);
+            });
+        } catch(e) {
+            // ignore
+        }
+    };
+    context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(onOpen));
+    // 关闭 html 时删除缓存
+    context.subscriptions.push(vscode.workspace.onDidCloseTextDocument(function(doc){
+        let index = -1;
+        cache.forEach(function(resource, i){
+            if(resource.document === doc) {
+                index = i;
+                resource.dispose();
+            }
+        });
+        if(index > -1) {
+            cache.splice(index, 1);
+        }
+    }));
+    // 文档打开时，编辑器并未就绪，所以等待编辑器可见后设置装饰器
+    context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(function(e){
+        if(!e) { return; }
+        decorations.refresh(e);
+    }));
+    // 文本发生变化的前提是编辑器已经就绪，此时更新装饰器
+    context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(function(e){
+        let editor = vscode.window.activeTextEditor;
+        editor && decorations.refresh(editor);
+    }));
+    context.subscriptions.push({
+        dispose: function(){
+            while(cache.length > 0) {
+                cache.pop();
+            }
+        }
+    });
+    vscode.window.visibleTextEditors.forEach(editor => {
+        onOpen(editor.document);
+    });
+}
+
+// this method is called when your extension is deactivated
+export function deactivate() {
+    
+}
+
+
+function checkConfigrations(config: vscode.WorkspaceConfiguration){
+    let ngconsoleRoot: string = config.ngconsole;
+    let ngconsoleResourcesRoot: string = config.ngconsole_resources;
+    if(!ngconsoleRoot) {
+        vscode.window.showErrorMessage("您还没有配置 ngconsole 仓库路径！");
+        return false;
+    }
+    if(!ngconsoleResourcesRoot) {
+        vscode.window.showErrorMessage("您还没有配置 ngconsole_resources 仓库路径！");
+        return false;
+    }
+    return true;
+}

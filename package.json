@@ -1,0 +1,66 @@
+{
+    "name": "vdife",
+    "displayName": "ngconsole",
+    "description": "",
+    "version": "0.0.1",
+    "publisher": "mystorp",
+    "engines": {
+        "vscode": "^1.27.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "activationEvents": [
+        "onCommand:vdife.syncLocalize",
+        "onLanguage:html"
+    ],
+    "main": "./out/extension",
+    "contributes": {
+        "commands": [{
+            "command": "vdife.syncLocalize",
+            "title": "同步 localize"
+        }, {
+            "command": "vdife.newLocalize",
+            "title": "新增/修改 localize"
+        }],
+        "menus": {
+            "editor/context": [{
+                "when": "resourceLangId == html",
+                "command": "vdife.syncLocalize",
+                "group": "1_modification"
+            }, {
+                "when": "resourceLangId == html",
+                "command": "vdife.newLocalize",
+                "group": "z_commands"
+            }]
+        },
+        "configuration": {
+            "type": "object",
+            "title": "VDI Frontend",
+            "properties": {
+                "vdife.ngconsole": {
+                    "type": "string",
+                    "description": "请填写本地 ngconsole 仓库绝对路径"
+                },
+                "vdife.ngconsole_resources": {
+                    "type": "string",
+                    "description": "请填写本地 ngconsole_resources 仓库绝对路径"
+                }
+            }
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "postinstall": "node ./node_modules/vscode/bin/install",
+        "test": "npm run compile && node ./node_modules/vscode/bin/test"
+    },
+    "devDependencies": {
+        "typescript": "^2.6.1",
+        "vscode": "^1.1.21",
+        "tslint": "^5.8.0",
+        "@types/node": "^8.10.25",
+        "@types/mocha": "^2.2.42"
+    }
+}
