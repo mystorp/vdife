@@ -2,8 +2,12 @@
     "name": "vdife",
     "displayName": "ngconsole",
     "description": "",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "publisher": "mystorp",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/mystorp/vdife.git"
+    },
     "engines": {
         "vscode": "^1.27.0"
     },
@@ -12,7 +16,8 @@
     ],
     "activationEvents": [
         "onCommand:vdife.syncLocalize",
-        "onLanguage:html"
+        "onLanguage:html",
+        "onLanguage:javascript"
     ],
     "main": "./out/extension",
     "contributes": {

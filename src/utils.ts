@@ -32,6 +32,16 @@ export function getBranch(repo:string) {
 };
 
 /**
+ * 判断是否是 ngconsole 仓库中 js/vdi/ js/voi/ 下面的 js 文件
+ * TODO: 目前的判断比较粗暴，没有校验仓库路径是否匹配
+ * @param file {String}
+ * @returns {Boolean}
+ */
+export function isProjectJS(file: string) {
+    return /\/js\/v[do]i/.test(file);
+}
+
+/**
  * 验证 ngconsole, ngconsole_resources 仓库名是否一致。
  * ngconsole 命名规则：{version}-dev|{version}-OEM-{name}
  * ngconsole_resources 命名规则：{version}

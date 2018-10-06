@@ -4,7 +4,7 @@
 import * as vscode from 'vscode';
 import * as fs from "fs";
 import {normalize, sep} from "path";
-import {getBranch, isBranchMatch} from "./utils";
+import {getBranch, isBranchMatch, isProjectJS} from "./utils";
 
 
 
@@ -63,7 +63,7 @@ namespace LocalizeResourceProvider {
             getBranch(ngconsoleRoot),
             getBranch(ngconsoleResourcesRoot)
         ]).then(function(arr){
-            if(!isBranchMatch(...arr)) {
+            if(!isBranchMatch(arr[0], arr[1])) {
                 throw new Error("ngconsole, ngconsole_resources 仓库分支不匹配！");
             }
             let parts = arr[0].split("-");
@@ -134,10 +134,20 @@ namespace decorations {
             backgroundColor: '#f2554e'
         }
     });
+    const deprecatedAPIDecoration = vscode.window.createTextEditorDecorationType({
+        light: {
+            border: "1px solid #f2554e",
+            borderRadius: "5px"
+        },
+        dark: {
+            border: "1px solid #f2554e",
+            borderRadius: "5px"
+        }
+    });
     export const regexp = /(?:data-)?localize=["'](.*?)["']/mg;
     const interpolateRegExp = /\{\{.*?\}\}/
 
-    export function refresh(editor: vscode.TextEditor) {
+    function highlightLocalize(editor: vscode.TextEditor) {
         let doc = editor.document;
         let resourceData = LocalizeResourceProvider.getLanguagePack(doc);
         if(!resourceData) { return; }
@@ -170,6 +180,45 @@ namespace decorations {
         editor.setDecorations(existsDecoration, renderExistsList);
         editor.setDecorations(missingDecoration, renderMissingList);
     }
+
+    const deprecatedAPIInfos = [
+        [/\$\$\$I18N\.get\(.*?\)/g, "`$$$I18N.get()` 已弃用，请使用 `i18n.translateText()` 代替"],
+        [/\$\$\$MSG\.get\(.*?\)/g, "`$$$MSG.get()` 已弃用，请使用 `i18n.translateCode()` 代替"],
+        [/\$\.bigBox\(\{[\s\S]*?\}\);?/mg, "`$.bigBox({ ... })` 已弃用，请使用 `uihelper.alertXXX()` 代替"],
+        [/\$modal\.open\(\{\s+template\s*:\s*"<section id='widget-grid'>[\s\S]*?controller\s*:[\s\S]*?size\s*:[\s\S]*?\}\);?/mg, "请使用 `uihelper.confirmWithModal({ ... })`代替"]
+    ];
+    function highlightDeprecatedAPI(editor: vscode.TextEditor) {
+        let doc = editor.document;
+        let text = doc.getText();
+        let renderList: vscode.DecorationOptions[] = [];
+        deprecatedAPIInfos.forEach(info => {
+            let regexp = info[0] as RegExp;
+            let message = info[1] as string;
+            regexp.lastIndex = 0;
+            let result;
+            let startPos: vscode.Position, endPos: vscode.Position;
+            let decoration: vscode.DecorationOptions;
+            while((result = regexp.exec(text))) {
+                startPos = doc.positionAt(result.index);
+                endPos = doc.positionAt(result.index + result[0].length);
+                decoration = {
+                    range: new vscode.Range(startPos, endPos),
+                    hoverMessage: message
+                };
+                renderList.push(decoration);
+            }
+        });
+        editor.setDecorations(deprecatedAPIDecoration, renderList);
+    }
+
+    export function highlight(editor: vscode.TextEditor) {
+        let doc = editor.document;
+        if(doc.languageId === "html") {
+            highlightLocalize(editor);
+        } else if(doc.languageId === "javascript" && isProjectJS(doc.fileName)) {
+            highlightDeprecatedAPI(editor);
+        }
+    }
 }
 
 
@@ -194,7 +243,7 @@ export function activate(context: vscode.ExtensionContext) {
         let hasNewLocalize = false;
         let allRange = new vscode.Range(doc.positionAt(0), doc.positionAt(text.length));
         let newText = doc.getText().replace(decorations.regexp, function(m, key){
-            if(!resourceData.hasOwnProperty(key)) {
+            if(resourceData && !resourceData.hasOwnProperty(key)) {
                 hasNewLocalize = true;
                 resourceData[key] = key;
             }
@@ -239,7 +288,7 @@ export function activate(context: vscode.ExtensionContext) {
                 cache.push(resource);
                 vscode.window.visibleTextEditors.forEach(editor => {
                     if(editor.document === doc) {
-                        decorations.refresh(editor);
+                        decorations.highlight(editor);
                     }
                 });
             }, function(e){
@@ -266,12 +315,12 @@ export function activate(context: vscode.ExtensionContext) {
     // 文档打开时，编辑器并未就绪，所以等待编辑器可见后设置装饰器
     context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(function(e){
         if(!e) { return; }
-        decorations.refresh(e);
+        decorations.highlight(e);
     }));
     // 文本发生变化的前提是编辑器已经就绪，此时更新装饰器
     context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(function(e){
         let editor = vscode.window.activeTextEditor;
-        editor && decorations.refresh(editor);
+        editor && decorations.highlight(editor);
     }));
     context.subscriptions.push({
         dispose: function(){
@@ -280,9 +329,7 @@ export function activate(context: vscode.ExtensionContext) {
             }
         }
     });
-    vscode.window.visibleTextEditors.forEach(editor => {
-        onOpen(editor.document);
-    });
+    vscode.window.visibleTextEditors.forEach(decorations.highlight);
 }
 
 // this method is called when your extension is deactivated
