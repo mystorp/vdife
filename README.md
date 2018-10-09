@@ -10,12 +10,19 @@
 * 编辑 ngconsole 仓库中的 html 时，扩展可以执行 `新增/修改 localize` 命令
 * 编辑 ngconsole 仓库中的 html 时，扩展可以高亮显示[*不*]存在的 localize 属性
 
+截图：
+
+![localize](./screenshots/localize.gif)
+
 ### 弃用 API 提醒：
 
 * 编辑 js/vdi, js/voi 下面的 js 文件时，可以高亮 `$$$I18N`, `$$$MSG` 代码调用
 * 编辑 js/vdi, js/voi 下面的 js 文件时，可以高亮 `$.bigBox(...)` 代码调用
 * ~~编辑 ngconsole 仓库中的 html 时，扩展可以高亮 3 层无用嵌套~~
 
+截图：
+
+![弃用API](./screenshots/deprecatedAPI.gif)
 
 ## 设置项
 

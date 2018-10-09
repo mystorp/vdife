@@ -242,7 +242,7 @@ export function activate(context: vscode.ExtensionContext) {
         let text = doc.getText();
         let hasNewLocalize = false;
         let allRange = new vscode.Range(doc.positionAt(0), doc.positionAt(text.length));
-        let newText = doc.getText().replace(decorations.regexp, function(m, key){
+        let newText = text.replace(decorations.regexp, function(m, key){
             if(resourceData && !resourceData.hasOwnProperty(key)) {
                 hasNewLocalize = true;
                 resourceData[key] = key;
@@ -251,10 +251,10 @@ export function activate(context: vscode.ExtensionContext) {
         });
         if(hasNewLocalize) {
             LocalizeResourceProvider.saveLanguagePack(resourceData);
+            textEditor.edit(function(edit){
+                edit.replace(allRange, newText);
+            });
         }
-        textEditor.edit(function(edit){
-            edit.replace(allRange, newText);
-        });
     }));
     // 新增 localize
     context.subscriptions.push(vscode.commands.registerTextEditorCommand("vdife.newLocalize", (textEditor) => {
@@ -286,6 +286,7 @@ export function activate(context: vscode.ExtensionContext) {
         try {
             LocalizeResourceProvider.prepare(doc).then(function(resource){
                 cache.push(resource);
+                // 加载完资源后，检测一次当前可见的编辑器，如果仍然可见，则执行高亮
                 vscode.window.visibleTextEditors.forEach(editor => {
                     if(editor.document === doc) {
                         decorations.highlight(editor);
@@ -329,7 +330,7 @@ export function activate(context: vscode.ExtensionContext) {
             }
         }
     });
-    vscode.window.visibleTextEditors.forEach(decorations.highlight);
+    vscode.window.visibleTextEditors.forEach(editor => onOpen(editor.document));
 }
 
 // this method is called when your extension is deactivated
