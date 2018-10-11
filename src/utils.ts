@@ -1,7 +1,8 @@
 import {spawn} from "child_process";
+import {sep} from "path";
 
 export function getBranch(repo:string) {
-    return new Promise<string|undefined>(function(resolve, reject){
+    return new Promise<string>(function(resolve, reject){
         let proc = spawn("git", ["branch"], {
             cwd: repo
         });
@@ -18,7 +19,7 @@ export function getBranch(repo:string) {
         proc.stderr.on("data", (b: Buffer) => errbuf.push(b));
         proc.on("error", reject);
     }).then(function(output){
-        let currentBranch: string = "";
+        let currentBranch = "";
         output && output.split(/\r?\n/g).forEach(function(branch){
             if(branch.indexOf("*") === 0) {
                 currentBranch = branch.substring(1).trim();
@@ -38,7 +39,9 @@ export function getBranch(repo:string) {
  * @returns {Boolean}
  */
 export function isProjectJS(file: string) {
-    return /\/js\/v[do]i/.test(file);
+    let vdiParts = `${sep}js${sep}vdi${sep}`;
+    let voiParts = `${sep}js${sep}voi${sep}`;
+    return file.indexOf(vdiParts) > -1 || file.indexOf(voiParts) > -1;
 }
 
 /**

@@ -63,7 +63,7 @@ namespace LocalizeResourceProvider {
             getBranch(ngconsoleRoot),
             getBranch(ngconsoleResourcesRoot)
         ]).then(function(arr){
-            if(!isBranchMatch(arr[0], arr[1])) {
+            if(!isBranchMatch(...arr)) {
                 throw new Error("ngconsole, ngconsole_resources 仓库分支不匹配！");
             }
             let parts = arr[0].split("-");
@@ -134,17 +134,27 @@ namespace decorations {
             backgroundColor: '#f2554e'
         }
     });
+    const interpolateDecoration = vscode.window.createTextEditorDecorationType({
+        light: {
+            border: "1px solid #fdbc40",
+            borderRadius: "3px"
+        },
+        dark: {
+            border: "1px solid #fdbc40",
+            borderRadius: "3px"
+        }
+    });
     const deprecatedAPIDecoration = vscode.window.createTextEditorDecorationType({
         light: {
             border: "1px solid #f2554e",
-            borderRadius: "5px"
+            borderRadius: "3px"
         },
         dark: {
             border: "1px solid #f2554e",
-            borderRadius: "5px"
+            borderRadius: "3px"
         }
     });
-    export const regexp = /(?:data-)?localize=["'](.*?)["']/mg;
+    export const regexp = /(?:data-)?localize=(["'])(.*?)\1/mg;
     const interpolateRegExp = /\{\{.*?\}\}/
 
     function highlightLocalize(editor: vscode.TextEditor) {
@@ -154,31 +164,58 @@ namespace decorations {
         let range = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
         let renderExistsList: vscode.DecorationOptions[] = [];
         let renderMissingList: vscode.DecorationOptions[] = [];
+        let renderinterpolateList: vscode.DecorationOptions[] = [];
     
         let text = editor.document.getText(range);
         let result;
         let startPos: vscode.Position, endPos: vscode.Position;
-        let decoration;
+        let decoration: vscode.DecorationOptions;
+        let commentRanges = getHtmlCommentRanges(text, doc);
+        let isInComment = false;
         regexp.lastIndex = 0;
         while((result = regexp.exec(text))) {
-            // 忽略带有插值语法的 localize 指令
-            if(interpolateRegExp.test(result[1])) {
-                continue;
-            }
             startPos = doc.positionAt(result.index);
             endPos = doc.positionAt(result.index + result[0].length);
             decoration = {
                 range: new vscode.Range(startPos, endPos)
             };
-            if(resourceData.hasOwnProperty(result[1])) {
-                renderExistsList.push(decoration);
+            // 忽略注释中的 localize
+            isInComment = commentRanges.some(range => range.contains(decoration.range));
+            if(isInComment) {
+                continue;
+            }
+            if(interpolateRegExp.test(result[2])) {
+                renderinterpolateList.push(decoration);
             } else {
-                renderMissingList.push(decoration);
+                if(resourceData.hasOwnProperty(result[2])) {
+                    renderExistsList.push(decoration);
+                } else {
+                    renderMissingList.push(decoration);
+                }
             }
         }
     
         editor.setDecorations(existsDecoration, renderExistsList);
         editor.setDecorations(missingDecoration, renderMissingList);
+        editor.setDecorations(interpolateDecoration, renderinterpolateList);
+    }
+
+    /**
+     * 获取指定 html 字符串中注释 range 列表
+     * @param text html 字符串
+     */
+    function getHtmlCommentRanges(text: string, doc: vscode.TextDocument): vscode.Range[] {
+        let ranges: vscode.Range[] = [];
+        const commentStart = "<!--";
+        const commentEnd = "-->";
+        let pos1, pos2 = 0;
+        while((pos1 = text.indexOf(commentStart, pos2)) !== -1) {
+            pos2 = text.indexOf(commentEnd, pos1);
+            if(pos2 !== -1) {
+                ranges.push(new vscode.Range(doc.positionAt(pos1), doc.positionAt(pos2)));
+            }
+        }
+        return ranges;
     }
 
     const deprecatedAPIInfos = [
@@ -189,6 +226,11 @@ namespace decorations {
     ];
     function highlightDeprecatedAPI(editor: vscode.TextEditor) {
         let doc = editor.document;
+        // 忽略:
+        //   js/vdi/utils/ui.js 这个文件封装了 $.bigBox 调用
+        if(doc.fileName.indexOf(`js${sep}vdi${sep}utils${sep}ui.js`) > -1) {
+            return;
+        }
         let text = doc.getText();
         let renderList: vscode.DecorationOptions[] = [];
         deprecatedAPIInfos.forEach(info => {
@@ -223,6 +265,9 @@ namespace decorations {
 
 
 export function activate(context: vscode.ExtensionContext) {
+    if(!vscode.extensions.getExtension("dbaeumer.vscode-eslint")) {
+        vscode.window.showInformationMessage("请安装 ESLint 扩展！");
+    }
     let config = vscode.workspace.getConfiguration("vdife");
     if(!checkConfigrations(config)) { return; }
     let cache: LocalizeResourceProvider.LocalizeResource[] = [];
@@ -323,6 +368,7 @@ export function activate(context: vscode.ExtensionContext) {
         let editor = vscode.window.activeTextEditor;
         editor && decorations.highlight(editor);
     }));
+    // 注册闭包缓存清理
     context.subscriptions.push({
         dispose: function(){
             while(cache.length > 0) {
@@ -330,6 +376,7 @@ export function activate(context: vscode.ExtensionContext) {
             }
         }
     });
+    // 对已经可见的编辑器做一次检测
     vscode.window.visibleTextEditors.forEach(editor => onOpen(editor.document));
 }
 
