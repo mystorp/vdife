@@ -63,7 +63,8 @@ namespace LocalizeResourceProvider {
             getBranch(ngconsoleRoot),
             getBranch(ngconsoleResourcesRoot)
         ]).then(function(arr){
-            if(!isBranchMatch(...arr)) {
+            // 使用 `...arr` 会报错：Expected 2 arguments, but got 0 or more.
+            if(!isBranchMatch(arr[0], arr[1])) {
                 throw new Error("ngconsole, ngconsole_resources 仓库分支不匹配！");
             }
             let parts = arr[0].split("-");
