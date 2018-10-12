@@ -2,7 +2,7 @@
     "name": "vdife",
     "displayName": "ngconsole",
     "description": "vdi 前端辅助开发工具",
-    "version": "0.0.3",
+    "version": "0.0.4",
     "publisher": "mystorp",
     "repository": {
         "type": "git",
