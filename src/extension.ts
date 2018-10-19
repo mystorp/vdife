@@ -110,156 +110,242 @@ namespace LocalizeResourceProvider {
     }
 }
 
-namespace decorations {
-    const existsDecoration = vscode.window.createTextEditorDecorationType({
-        overviewRulerColor: '#3eb94e',
-        overviewRulerLane: vscode.OverviewRulerLane.Right,
-        light: {
-            color: "white",
-            backgroundColor: '#3eb94e'
-        },
-        dark: {
-            color: "white",
-            backgroundColor: '#3eb94e'
+namespace diagnostics {
+    interface DeprecatedAPIInfo {
+        regexp: RegExp;
+        message: string,
+        fix?: Function
+    }
+    const deprecatedAPIInfos: DeprecatedAPIInfo[] = [{
+        regexp: /\$\$\$I18N\.get\((.*?)\)/g,
+        message: "`$$$I18N.get()` 已弃用，请使用 `i18n.translateText()` 代替",
+        fix: function(code: string): string{
+            let result = this.regexp.exec(code);
+            return result ? `i18n.translateText(${result[1]})` : code;
         }
-    });
-    const missingDecoration = vscode.window.createTextEditorDecorationType({
-        overviewRulerColor: '#f2554e',
-        overviewRulerLane: vscode.OverviewRulerLane.Right,
-        light: {
-            color: "white",
-            backgroundColor: '#f2554e'
-        },
-        dark: {
-            color: "white",
-            backgroundColor: '#f2554e'
+    }, {
+        regexp: /\$\$\$MSG\.get\((.*?)\)/g,
+        message: "`$$$MSG.get()` 已弃用，请使用 `i18n.translateCode()` 代替",
+        fix: function(code: string): string{
+            let result = this.regexp.exec(code);
+            return result ? `i18n.translateCode(${result[1]})` : code;
         }
-    });
-    const interpolateDecoration = vscode.window.createTextEditorDecorationType({
-        light: {
-            border: "1px solid #fdbc40",
-            borderRadius: "3px"
-        },
-        dark: {
-            border: "1px solid #fdbc40",
-            borderRadius: "3px"
-        }
-    });
-    const deprecatedAPIDecoration = vscode.window.createTextEditorDecorationType({
-        light: {
-            border: "1px solid #f2554e",
-            borderRadius: "3px"
-        },
-        dark: {
-            border: "1px solid #f2554e",
-            borderRadius: "3px"
-        }
-    });
-    export const regexp = /(?:data-)?localize=(["'])(.*?)\1/mg;
-    const interpolateRegExp = /\{\{.*?\}\}/
+    }, {
+        regexp: /\$\.bigBox\(\{[\s\S]*?\}\);?/mg,
+        message: "`$.bigBox({ ... })` 已弃用，请使用 `uihelper.alertXXX()` 代替"
+    }, {
+        regexp: /\$modal\.open\(\{\s+template\s*:\s*"<section id='widget-grid'>[\s\S]*?controller\s*:[\s\S]*?size\s*:[\s\S]*?\}\);?/mg,
+        message: "请使用 `uihelper.confirmWithModal({ ... })`代替"
+    }];
 
-    function highlightLocalize(editor: vscode.TextEditor) {
-        let doc = editor.document;
-        let resourceData = LocalizeResourceProvider.getLanguagePack(doc);
-        if(!resourceData) { return; }
-        let range = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
-        let renderExistsList: vscode.DecorationOptions[] = [];
-        let renderMissingList: vscode.DecorationOptions[] = [];
-        let renderinterpolateList: vscode.DecorationOptions[] = [];
-    
-        let text = editor.document.getText(range);
-        let result;
-        let startPos: vscode.Position, endPos: vscode.Position;
-        let decoration: vscode.DecorationOptions;
-        let commentRanges = getHtmlCommentRanges(text, doc);
-        let isInComment = false;
-        regexp.lastIndex = 0;
-        while((result = regexp.exec(text))) {
-            startPos = doc.positionAt(result.index);
-            endPos = doc.positionAt(result.index + result[0].length);
-            decoration = {
-                range: new vscode.Range(startPos, endPos)
-            };
-            // 忽略注释中的 localize
-            isInComment = commentRanges.some(range => range.contains(decoration.range));
-            if(isInComment) {
-                continue;
+    export class DeprecatedAPIProvider implements vscode.CodeActionProvider {
+        private diagnosticName = "ngconsole 弃用 API";
+        private collection: vscode.DiagnosticCollection;
+        constructor(context: vscode.ExtensionContext) {
+            this.collection = vscode.languages.createDiagnosticCollection(this.diagnosticName);
+            context.subscriptions.push(
+                vscode.languages.registerCodeActionsProvider("javascript", this),
+                vscode.workspace.onDidOpenTextDocument((e) => this.updateDiagnostics(e)),
+                vscode.workspace.onDidChangeTextDocument((e) => this.updateDiagnostics(e.document)),
+                vscode.workspace.onDidCloseTextDocument((e) => this.removeDiagnostics(e))
+            );
+            vscode.workspace.textDocuments.forEach(doc => this.updateDiagnostics(doc));
+        }
+        provideCodeActions(document: vscode.TextDocument, range: vscode.Range | vscode.Selection, context: vscode.CodeActionContext, token: vscode.CancellationToken): vscode.ProviderResult<(vscode.Command | vscode.CodeAction)[]> {
+            let diagnostics = context.diagnostics.filter(p => p.source === this.diagnosticName);
+            if(diagnostics.length === 0) { return []; }
+            return diagnostics.map(p => <vscode.Command>{
+                title: "转换为新 API",
+                command: "vdife.fixDeprecated",
+                arguments: [document, p.range]
+            });
+        }
+        updateDiagnostics(doc: vscode.TextDocument){
+            if(doc.languageId !== "javascript") { return; }
+            // 忽略:
+            if(!isProjectJS(doc.fileName)) { return; }
+            //   js/vdi/utils/ui.js 这个文件封装了 $.bigBox 调用
+            if(doc.fileName.indexOf(`js${sep}vdi${sep}utils${sep}ui.js`) > -1) {
+                return;
             }
-            if(interpolateRegExp.test(result[2])) {
-                renderinterpolateList.push(decoration);
-            } else {
-                if(resourceData.hasOwnProperty(result[2])) {
-                    renderExistsList.push(decoration);
-                } else {
-                    renderMissingList.push(decoration);
+            let text = doc.getText();
+            let diagnostics: vscode.Diagnostic[] = [];
+            deprecatedAPIInfos.forEach(info => {
+                let regexp = info.regexp;
+                let message = info.message;
+                regexp.lastIndex = 0;
+                let result, tmp;
+                let startPos: vscode.Position, endPos: vscode.Position;
+                while((result = regexp.exec(text))) {
+                    startPos = doc.positionAt(result.index);
+                    endPos = doc.positionAt(result.index + result[0].length);
+                    tmp = new vscode.Diagnostic(new vscode.Range(startPos, endPos), message, vscode.DiagnosticSeverity.Error);
+                    if(info.fix) {
+                        tmp.source = this.diagnosticName;
+                    }
+                    diagnostics.push(tmp);
                 }
+            });
+            this.collection.set(doc.uri, diagnostics);
+        }
+        removeDiagnostics(doc: vscode.TextDocument) {
+            this.collection.delete(doc.uri);
+        }
+        static fix(editor: vscode.TextEditor, range: vscode.Range) {
+            let doc = editor.document;
+            let code = doc.getText(range);
+            let fixedCode = code;
+            deprecatedAPIInfos.forEach(info => {
+                if(!info.fix || !info.regexp.test(code)) { return; }
+                info.regexp.lastIndex = 0;
+                fixedCode = info.fix(code);
+            });
+            if(code === fixedCode) { return; }
+            editor.edit(function(editBuilder){
+                editBuilder.replace(range, fixedCode);
+            });
+        }
+    }
+    export const localizeRegExp = /(?:data-)?localize(?:-title|-placeholder|-href|-tip)?=(["'])(.+?)\1/mg;
+    export class LocalizeProvider implements vscode.CodeActionProvider, vscode.HoverProvider, vscode.Disposable {
+        
+        private diagnosticName = "ngconsole_resoures";
+        private collection: vscode.DiagnosticCollection;
+        private interpolateRegExp = /\{\{.*?\}\}/;
+        private hoverRegExp = /(?:data-)?localize(?:-title|-placeHolder|-href|-tip)?\s*=\s*["'].*?$/;
+        private cache: LocalizeResourceProvider.LocalizeResource[] = [];
+        constructor(context: vscode.ExtensionContext) {
+            this.collection = vscode.languages.createDiagnosticCollection(this.diagnosticName);
+            context.subscriptions.push(
+                vscode.languages.registerCodeActionsProvider("html", this),
+                vscode.languages.registerHoverProvider("html", this),
+                vscode.workspace.onDidOpenTextDocument((e) => this.onOpenTextDocument(e)),
+                vscode.workspace.onDidChangeTextDocument((e) => this.updateDiagnostics(e.document)),
+                vscode.workspace.onDidCloseTextDocument((e) => this.onCloseTextDocument(e)),
+                this
+            );
+            vscode.workspace.textDocuments.forEach(doc => this.onOpenTextDocument(doc));
+        }
+        provideCodeActions(document: vscode.TextDocument, range: vscode.Range | vscode.Selection, context: vscode.CodeActionContext, token: vscode.CancellationToken): vscode.ProviderResult<(vscode.Command | vscode.CodeAction)[]> {
+            let diagnostics = context.diagnostics.filter(p => p.source === this.diagnosticName).filter(p => p.severity === vscode.DiagnosticSeverity.Error);
+            if(diagnostics.length === 0) { return []; }
+            return diagnostics.map(p => <vscode.Command>{
+                title: `添加翻译 ${p.code} 到 ngcnosole_resources`,
+                command: "vdife.addLocalize",
+                arguments: [document, p.code]
+            });
+        }
+        provideHover(document: vscode.TextDocument, position: vscode.Position, token: vscode.CancellationToken): vscode.ProviderResult<vscode.Hover> {
+            if(document.languageId !== "html") { return; }
+            let resourceData = LocalizeResourceProvider.getLanguagePack(document);
+            if(!resourceData) {
+                return null;
+            }
+            let text = document.getText(new vscode.Range(document.lineAt(position.line).range.start, position));
+            if(this.hoverRegExp.test(text)) {
+                let range = document.getWordRangeAtPosition(position);
+                if(!range) { return null; }
+                let resourceKey = document.getText(range);
+                return <vscode.Hover>{
+                    range: range,
+                    contents: [{
+                        value: "翻译内容：" + resourceData[resourceKey]
+                    }]
+                };
+            }
+            return null;
+        }
+        onOpenTextDocument(doc: vscode.TextDocument) {
+            if(doc.languageId !== "html") { return; }
+            try {
+                LocalizeResourceProvider.prepare(doc).then((resource) => {
+                    this.cache.push(resource);
+                    this.updateDiagnostics(doc);
+                }, function(e){
+                    vscode.window.showErrorMessage(e.message);
+                });
+            } catch(e) {
+                // ignore
             }
         }
-    
-        editor.setDecorations(existsDecoration, renderExistsList);
-        editor.setDecorations(missingDecoration, renderMissingList);
-        editor.setDecorations(interpolateDecoration, renderinterpolateList);
-    }
-
-    /**
-     * 获取指定 html 字符串中注释 range 列表
-     * @param text html 字符串
-     */
-    function getHtmlCommentRanges(text: string, doc: vscode.TextDocument): vscode.Range[] {
-        let ranges: vscode.Range[] = [];
-        const commentStart = "<!--";
-        const commentEnd = "-->";
-        let pos1, pos2 = 0;
-        while((pos1 = text.indexOf(commentStart, pos2)) !== -1) {
-            pos2 = text.indexOf(commentEnd, pos1);
-            if(pos2 !== -1) {
-                ranges.push(new vscode.Range(doc.positionAt(pos1), doc.positionAt(pos2)));
+        onCloseTextDocument(doc: vscode.TextDocument) {
+            let index = -1;
+            this.cache.forEach(function(resource, i){
+                if(resource.document === doc) {
+                    index = i;
+                    resource.dispose();
+                }
+            });
+            if(index > -1) {
+                this.cache.splice(index, 1);
             }
         }
-        return ranges;
-    }
-
-    const deprecatedAPIInfos = [
-        [/\$\$\$I18N\.get\(.*?\)/g, "`$$$I18N.get()` 已弃用，请使用 `i18n.translateText()` 代替"],
-        [/\$\$\$MSG\.get\(.*?\)/g, "`$$$MSG.get()` 已弃用，请使用 `i18n.translateCode()` 代替"],
-        [/\$\.bigBox\(\{[\s\S]*?\}\);?/mg, "`$.bigBox({ ... })` 已弃用，请使用 `uihelper.alertXXX()` 代替"],
-        [/\$modal\.open\(\{\s+template\s*:\s*"<section id='widget-grid'>[\s\S]*?controller\s*:[\s\S]*?size\s*:[\s\S]*?\}\);?/mg, "请使用 `uihelper.confirmWithModal({ ... })`代替"]
-    ];
-    function highlightDeprecatedAPI(editor: vscode.TextEditor) {
-        let doc = editor.document;
-        // 忽略:
-        //   js/vdi/utils/ui.js 这个文件封装了 $.bigBox 调用
-        if(doc.fileName.indexOf(`js${sep}vdi${sep}utils${sep}ui.js`) > -1) {
-            return;
-        }
-        let text = doc.getText();
-        let renderList: vscode.DecorationOptions[] = [];
-        deprecatedAPIInfos.forEach(info => {
-            let regexp = info[0] as RegExp;
-            let message = info[1] as string;
-            regexp.lastIndex = 0;
-            let result;
+        updateDiagnostics(doc: vscode.TextDocument) {
+            if(doc.languageId !== "html") { return; }
+            let resourceData = LocalizeResourceProvider.getLanguagePack(doc);
+            if(!resourceData) { return; }
+        
+            let text = doc.getText();
+            let result, resourceKey;
             let startPos: vscode.Position, endPos: vscode.Position;
-            let decoration: vscode.DecorationOptions;
+            let commentRanges = this.getHtmlCommentRanges(text, doc);
+            let isInComment = false;
+            let diagnostics: vscode.Diagnostic[] = [];
+            let regexp = localizeRegExp;
+            let range: vscode.Range, diagnostic;
+            regexp.lastIndex = 0;
             while((result = regexp.exec(text))) {
                 startPos = doc.positionAt(result.index);
                 endPos = doc.positionAt(result.index + result[0].length);
-                decoration = {
-                    range: new vscode.Range(startPos, endPos),
-                    hoverMessage: message
-                };
-                renderList.push(decoration);
+                resourceKey = result[2].trim();
+                range = new vscode.Range(startPos, endPos);
+                // 忽略注释中的 localize
+                isInComment = commentRanges.some(cr => cr.contains(range));
+                if(isInComment) {
+                    continue;
+                }
+                // 忽略 angular 插值语法
+                if(this.interpolateRegExp.test(resourceKey)) {
+                    continue;
+                }
+                if(!resourceData.hasOwnProperty(resourceKey)) {
+                    diagnostic = new vscode.Diagnostic(range, "不存在此翻译：" + resourceKey, vscode.DiagnosticSeverity.Error);
+                    diagnostic.source = this.diagnosticName;
+                    diagnostic.code = resourceKey;
+                    diagnostics.push(diagnostic);
+                }
             }
-        });
-        editor.setDecorations(deprecatedAPIDecoration, renderList);
-    }
-
-    export function highlight(editor: vscode.TextEditor) {
-        let doc = editor.document;
-        if(doc.languageId === "html") {
-            highlightLocalize(editor);
-        } else if(doc.languageId === "javascript" && isProjectJS(doc.fileName)) {
-            highlightDeprecatedAPI(editor);
+            this.collection.set(doc.uri, diagnostics);
+        }
+        static addLocalize(doc: vscode.TextDocument, key: string){
+            let resourceData = LocalizeResourceProvider.getLanguagePack(doc);
+            if(!resourceData) { return; }
+            resourceData[key] = key;
+            LocalizeResourceProvider.saveLanguagePack(resourceData);
+        }
+        /**
+         * 获取指定 html 字符串中注释 range 列表
+         * @param text html 字符串
+         */
+        getHtmlCommentRanges(text: string, doc: vscode.TextDocument): vscode.Range[] {
+            let ranges: vscode.Range[] = [];
+            const commentStart = "<!--";
+            const commentEnd = "-->";
+            let pos1, pos2 = 0;
+            while((pos1 = text.indexOf(commentStart, pos2)) !== -1) {
+                pos2 = text.indexOf(commentEnd, pos1);
+                if(pos2 !== -1) {
+                    pos2 += commentEnd.length;
+                    ranges.push(new vscode.Range(doc.positionAt(pos1), doc.positionAt(pos2)));
+                }
+            }
+            return ranges;
+        }
+        dispose() {
+            while(this.cache.length > 0) {
+                let resource = this.cache.pop();
+                resource && resource.dispose();
+            }
         }
     }
 }
@@ -271,24 +357,19 @@ export function activate(context: vscode.ExtensionContext) {
     }
     let config = vscode.workspace.getConfiguration("vdife");
     if(!checkConfigrations(config)) { return; }
-    let cache: LocalizeResourceProvider.LocalizeResource[] = [];
+    new diagnostics.DeprecatedAPIProvider(context);
+    let localizeProvider = new diagnostics.LocalizeProvider(context);
     // 手动执行 "同步 localize" 命令时
     context.subscriptions.push(vscode.commands.registerTextEditorCommand("vdife.syncLocalize", (textEditor, edit) => {
         if(textEditor.document.languageId !== "html") {
             return;
         }
         let doc = textEditor.document;
-        let resourceData: LocalizeResourceProvider.LanguagePack|undefined;
-        cache.forEach(function(resource){
-            if(resource.document === doc) {
-                resourceData = resource.data;
-            }
-        });
+        let resourceData = LocalizeResourceProvider.getLanguagePack(doc);
         if(!resourceData) { return; }
         let text = doc.getText();
         let hasNewLocalize = false;
-        let allRange = new vscode.Range(doc.positionAt(0), doc.positionAt(text.length));
-        let newText = text.replace(decorations.regexp, function(m, key){
+        let newText = text.replace(diagnostics.localizeRegExp, function(m, key){
             if(resourceData && !resourceData.hasOwnProperty(key)) {
                 hasNewLocalize = true;
                 resourceData[key] = key;
@@ -296,6 +377,7 @@ export function activate(context: vscode.ExtensionContext) {
             return m.indexOf("data-") === 0 ? m.substring(5) : m;
         });
         if(hasNewLocalize) {
+            let allRange = new vscode.Range(doc.positionAt(0), doc.positionAt(text.length));
             LocalizeResourceProvider.saveLanguagePack(resourceData);
             textEditor.edit(function(edit){
                 edit.replace(allRange, newText);
@@ -326,59 +408,16 @@ export function activate(context: vscode.ExtensionContext) {
             }
         });
     }));
-    // 打开 html 时缓存必要的资源信息
-    const onOpen = function(doc: vscode.TextDocument){
-        if(doc.languageId !== "html") { return; }
-        try {
-            LocalizeResourceProvider.prepare(doc).then(function(resource){
-                cache.push(resource);
-                // 加载完资源后，检测一次当前可见的编辑器，如果仍然可见，则执行高亮
-                vscode.window.visibleTextEditors.forEach(editor => {
-                    if(editor.document === doc) {
-                        decorations.highlight(editor);
-                    }
-                });
-            }, function(e){
-                vscode.window.showErrorMessage(e.message);
-            });
-        } catch(e) {
-            // ignore
-        }
-    };
-    context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(onOpen));
-    // 关闭 html 时删除缓存
-    context.subscriptions.push(vscode.workspace.onDidCloseTextDocument(function(doc){
-        let index = -1;
-        cache.forEach(function(resource, i){
-            if(resource.document === doc) {
-                index = i;
-                resource.dispose();
-            }
-        });
-        if(index > -1) {
-            cache.splice(index, 1);
-        }
-    }));
-    // 文档打开时，编辑器并未就绪，所以等待编辑器可见后设置装饰器
-    context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(function(e){
-        if(!e) { return; }
-        decorations.highlight(e);
-    }));
-    // 文本发生变化的前提是编辑器已经就绪，此时更新装饰器
-    context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(function(e){
+    context.subscriptions.push(vscode.commands.registerCommand("vdife.fixDeprecated", function(doc: vscode.TextDocument, range: vscode.Range){
         let editor = vscode.window.activeTextEditor;
-        editor && decorations.highlight(editor);
+        if(!editor) { return; }
+        if(editor.document !== doc) { return; }
+        diagnostics.DeprecatedAPIProvider.fix(editor, range);
     }));
-    // 注册闭包缓存清理
-    context.subscriptions.push({
-        dispose: function(){
-            while(cache.length > 0) {
-                cache.pop();
-            }
-        }
-    });
-    // 对已经可见的编辑器做一次检测
-    vscode.window.visibleTextEditors.forEach(editor => onOpen(editor.document));
+    context.subscriptions.push(vscode.commands.registerCommand("vdife.addLocalize", function(doc: vscode.TextDocument, key: string){
+        diagnostics.LocalizeProvider.addLocalize(doc, key);
+        localizeProvider.updateDiagnostics(doc);
+    }));
 }
 
 // this method is called when your extension is deactivated
