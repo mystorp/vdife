@@ -350,6 +350,76 @@ namespace diagnostics {
     }
 }
 
+namespace completions {
+    interface NgconsoleCompletionItem {
+        ["#type"]: "Text" | "Method" | "Function" | "Constructor" | "Variable" | "Class" | "Module" | "Property",
+        ["#signature"]: string;
+        ["#doc"]: string;
+    }
+    export class NgconsoleCompletionProvider implements vscode.CompletionItemProvider {
+        private completionsData: any;
+        private completions: vscode.CompletionList;
+        constructor(config: any, context: vscode.ExtensionContext) {
+            this.completions = new vscode.CompletionList([], true);
+            context.subscriptions.push(vscode.languages.registerCompletionItemProvider("javascript", this, ".", "$"));
+            fs.readFile("ngconsole-completions.json", "utf-8", (err, text) => {
+                if(err) { return; }
+                this.completionsData = JSON.parse(text) || {};
+            });
+        }
+        provideCompletionItems(document: vscode.TextDocument, position: vscode.Position, token: vscode.CancellationToken, context: vscode.CompletionContext): vscode.ProviderResult<vscode.CompletionItem[] | vscode.CompletionList> {
+            let contextRange = new vscode.Range(document.lineAt(position.line).range.start, position);
+            let contextText = document.getText(contextRange);
+            let result = /[a-z0-9\$\._]+$/.exec(contextText);
+            let data = this.completionsData;
+            if(!result || !data) {
+                return null;
+            }
+            let parts = result[0].split(".");
+            let sugguestPart = parts[parts.length - 1];
+            if(typeof sugguestPart === "undefined") {
+                return null;
+            }
+            let sugguestContext = data;
+
+            try {
+                for(let i = 0, len = parts.length - 1; i < len;i++) {
+                    const part = parts[i];
+                    const partValue = sugguestContext[part];
+                    if(partValue && typeof partValue === "object") {
+                        sugguestContext = partValue;
+                    } else {
+                        break;
+                    }
+                }
+            } catch(e) {
+                // ignore
+            }
+            if(!sugguestContext) { return null; }
+            let sugguestItem = sugguestPart ? sugguestContext[sugguestPart] : null;
+            // no need completions
+            if(sugguestItem && typeof sugguestItem === "object") {
+                return null;
+            }
+            this.completions.items.splice(0, this.completions.items.length);
+            Object.keys(sugguestContext).filter(key => sugguestPart.length === 0 ? !key.startsWith("#") : key.startsWith(sugguestPart)).map(key => {
+                let item = this.createCompletionItem(key, <NgconsoleCompletionItem>sugguestContext[key]);
+                this.completions.items.push(item);
+            });
+            
+            return this.completions;
+        }
+        createCompletionItem(name: string, data: NgconsoleCompletionItem): vscode.CompletionItem {
+            let item = new vscode.CompletionItem(name, vscode.CompletionItemKind[data["#type"]]);
+            item.insertText = name;
+            item.documentation = data["#doc"];
+            if(data["#type"] === "Method" || data["#type"] === "Function") {
+                item.detail = data["#signature"];
+            }
+            return item;
+        }
+    }
+}
 
 export function activate(context: vscode.ExtensionContext) {
     if(!vscode.extensions.getExtension("dbaeumer.vscode-eslint")) {
@@ -357,6 +427,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
     let config = vscode.workspace.getConfiguration("vdife");
     if(!checkConfigrations(config)) { return; }
+    new completions.NgconsoleCompletionProvider(config, context);
     new diagnostics.DeprecatedAPIProvider(context);
     let localizeProvider = new diagnostics.LocalizeProvider(context);
     // 手动执行 "同步 localize" 命令时

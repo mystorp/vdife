@@ -1,0 +1,14 @@
+{
+    "$scope": {
+        "#type":"Variable",
+        "#doc": "angular.Scope",
+        "$on": {
+            "#type": "Function",
+            "#signature":"$on(eventName, callback)"
+        },
+        "$watch": {
+            "#type": "Function",
+            "#signature": "$watch(expression, callback)"
+        }
+    }
+}
